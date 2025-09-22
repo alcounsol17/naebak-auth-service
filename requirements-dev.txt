@@ -1,0 +1,22 @@
+# Development dependencies
+-r requirements.txt
+
+# Code quality and formatting
+flake8==6.1.0
+black==23.12.1
+isort==5.13.2
+mypy==1.8.0
+pre-commit==3.6.0
+
+# Testing and coverage
+coverage==7.3.4
+pytest==7.4.4
+pytest-django==4.7.0
+pytest-cov==4.1.0
+factory-boy==3.3.0
+
+# Performance testing
+locust==2.20.0
+
+# Documentation
+drf-spectacular==0.27.0
