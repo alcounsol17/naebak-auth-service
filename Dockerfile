@@ -15,6 +15,7 @@ RUN apt-get update \
         gcc \
         python3-dev \
         libpq-dev \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 # نسخ ملف المتطلبات وتثبيتها
@@ -24,6 +25,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # نسخ كود التطبيق
 COPY . .
 
+# إنشاء مجلد السجلات
+RUN mkdir -p logs
+
 # إنشاء مستخدم غير جذر
 RUN adduser --disabled-password --gecos '' appuser && chown -R appuser /app
 USER appuser
@@ -31,5 +35,9 @@ USER appuser
 # تعريض المنفذ
 EXPOSE 8000
 
+# فحص الصحة
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/api/auth/health/ || exit 1
+
 # تشغيل التطبيق
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "auth_service.wsgi:application"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "3", "--timeout", "120", "auth_service.wsgi:application"]

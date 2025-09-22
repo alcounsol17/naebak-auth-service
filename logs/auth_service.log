@@ -1,0 +1,2 @@
+INFO 2025-09-22 04:33:09,709 autoreload 3630 139975615976064 Watching for file changes with StatReloader
+INFO 2025-09-22 04:33:21,247 basehttp 3630 139975454619200 "GET /api/auth/health/ HTTP/1.1" 200 112

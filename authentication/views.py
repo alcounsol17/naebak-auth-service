@@ -4,12 +4,15 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth import get_user_model
 from django.utils import timezone
-from .models import LoginHistory
+from .models import LoginHistory, PasswordResetToken, EmailVerificationToken
 from .serializers import (
     UserRegistrationSerializer, UserLoginSerializer, UserProfileSerializer,
-    ChangePasswordSerializer, RefreshTokenSerializer, LoginHistorySerializer
+    ChangePasswordSerializer, RefreshTokenSerializer, LoginHistorySerializer,
+    ForgotPasswordSerializer, ResetPasswordSerializer, EmailVerificationSerializer,
+    ResendVerificationSerializer, GoogleAuthSerializer
 )
 from .authentication import JWTTokenGenerator
+from .services import EmailService, GoogleAuthService, UserService
 import logging
 
 User = get_user_model()
@@ -39,6 +42,9 @@ def register(request):
     if serializer.is_valid():
         user = serializer.save()
         
+        # إرسال بريد التحقق
+        EmailService.send_verification_email(user)
+        
         # تسجيل عملية التسجيل
         logger.info(f"New user registered: {user.email}")
         
@@ -59,7 +65,7 @@ def register(request):
         user.save()
         
         return Response({
-            'message': 'تم تسجيل المستخدم بنجاح',
+            'message': 'تم تسجيل المستخدم بنجاح. يرجى التحقق من بريدك الإلكتروني لتفعيل الحساب.',
             'user': UserProfileSerializer(user).data,
             'tokens': tokens
         }, status=status.HTTP_201_CREATED)
@@ -123,6 +129,187 @@ def login(request):
         'message': 'بيانات تسجيل الدخول غير صحيحة',
         'errors': serializer.errors
     }, status=status.HTTP_401_UNAUTHORIZED)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def google_auth(request):
+    """
+    تسجيل الدخول عبر Google
+    """
+    serializer = GoogleAuthSerializer(data=request.data)
+    
+    if serializer.is_valid():
+        google_token = serializer.validated_data['google_token']
+        user_type = serializer.validated_data['user_type']
+        
+        # التحقق من رمز Google
+        google_data = GoogleAuthService.verify_google_token(google_token)
+        
+        if not google_data:
+            return Response({
+                'message': 'رمز Google غير صالح'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # الحصول على المستخدم أو إنشاؤه
+        user, created = GoogleAuthService.get_or_create_user_from_google(google_data, user_type)
+        
+        if not user:
+            return Response({
+                'message': 'خطأ في إنشاء الحساب'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        # إنشاء رموز المصادقة
+        tokens = JWTTokenGenerator.generate_tokens(user)
+        
+        # تسجيل عملية تسجيل الدخول
+        LoginHistory.objects.create(
+            user=user,
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+            is_successful=True
+        )
+        
+        # تحديث آخر IP للدخول
+        user.last_login_ip = get_client_ip(request)
+        user.last_login = timezone.now()
+        user.save()
+        
+        message = 'تم إنشاء الحساب وتسجيل الدخول بنجاح' if created else 'تم تسجيل الدخول بنجاح'
+        logger.info(f"Google auth successful for {user.email}, created: {created}")
+        
+        return Response({
+            'message': message,
+            'user': UserProfileSerializer(user).data,
+            'tokens': tokens
+        }, status=status.HTTP_200_OK)
+    
+    return Response({
+        'message': 'بيانات غير صحيحة',
+        'errors': serializer.errors
+    }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def forgot_password(request):
+    """
+    طلب استرجاع كلمة المرور
+    """
+    serializer = ForgotPasswordSerializer(data=request.data)
+    
+    if serializer.is_valid():
+        email = serializer.validated_data['email']
+        user = User.objects.get(email=email)
+        
+        # إرسال بريد استرجاع كلمة المرور
+        if EmailService.send_password_reset_email(user):
+            logger.info(f"Password reset requested for {user.email}")
+            return Response({
+                'message': 'تم إرسال رابط استرجاع كلمة المرور إلى بريدك الإلكتروني'
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                'message': 'خطأ في إرسال البريد الإلكتروني'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    return Response({
+        'message': 'بيانات غير صحيحة',
+        'errors': serializer.errors
+    }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def reset_password(request):
+    """
+    إعادة تعيين كلمة المرور
+    """
+    serializer = ResetPasswordSerializer(data=request.data)
+    
+    if serializer.is_valid():
+        reset_token = serializer.reset_token
+        new_password = serializer.validated_data['new_password']
+        
+        # تحديث كلمة المرور
+        user = reset_token.user
+        user.set_password(new_password)
+        user.save()
+        
+        # تعيين الرمز كمستخدم
+        reset_token.is_used = True
+        reset_token.save()
+        
+        logger.info(f"Password reset successful for {user.email}")
+        
+        return Response({
+            'message': 'تم إعادة تعيين كلمة المرور بنجاح'
+        }, status=status.HTTP_200_OK)
+    
+    return Response({
+        'message': 'بيانات غير صحيحة',
+        'errors': serializer.errors
+    }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def verify_email(request):
+    """
+    التحقق من البريد الإلكتروني
+    """
+    serializer = EmailVerificationSerializer(data=request.data)
+    
+    if serializer.is_valid():
+        verification_token = serializer.verification_token
+        
+        # تفعيل الحساب
+        user = verification_token.user
+        user.is_verified = True
+        user.save()
+        
+        # تعيين الرمز كمستخدم
+        verification_token.is_used = True
+        verification_token.save()
+        
+        logger.info(f"Email verified for {user.email}")
+        
+        return Response({
+            'message': 'تم تفعيل الحساب بنجاح'
+        }, status=status.HTTP_200_OK)
+    
+    return Response({
+        'message': 'بيانات غير صحيحة',
+        'errors': serializer.errors
+    }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def resend_verification(request):
+    """
+    إعادة إرسال رمز التحقق
+    """
+    serializer = ResendVerificationSerializer(data=request.data)
+    
+    if serializer.is_valid():
+        user = serializer.user
+        
+        # إرسال بريد التحقق
+        if EmailService.send_verification_email(user):
+            logger.info(f"Verification email resent to {user.email}")
+            return Response({
+                'message': 'تم إعادة إرسال رمز التحقق إلى بريدك الإلكتروني'
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                'message': 'خطأ في إرسال البريد الإلكتروني'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    return Response({
+        'message': 'بيانات غير صحيحة',
+        'errors': serializer.errors
+    }, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])
@@ -248,6 +435,21 @@ def user_info(request):
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
+def user_statistics(request):
+    """
+    الحصول على إحصائيات المستخدمين
+    """
+    stats = UserService.get_user_statistics()
+    if stats:
+        return Response(stats, status=status.HTTP_200_OK)
+    else:
+        return Response({
+            'message': 'خطأ في الحصول على الإحصائيات'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
 def health_check(request):
     """
     فحص صحة الخدمة
@@ -255,6 +457,6 @@ def health_check(request):
     return Response({
         'status': 'healthy',
         'service': 'naebak-auth-service',
-        'version': '1.0.0',
+        'version': '2.0.0',
         'timestamp': timezone.now()
     }, status=status.HTTP_200_OK)

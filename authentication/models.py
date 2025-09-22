@@ -1,6 +1,7 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
+import uuid
 
 
 class User(AbstractUser):
@@ -27,6 +28,10 @@ class User(AbstractUser):
     created_at = models.DateTimeField(default=timezone.now, verbose_name='تاريخ الإنشاء')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='تاريخ التحديث')
     last_login_ip = models.GenericIPAddressField(blank=True, null=True, verbose_name='آخر IP للدخول')
+    
+    # Google OAuth fields
+    google_id = models.CharField(max_length=255, blank=True, null=True, unique=True, verbose_name='معرف Google')
+    google_email = models.EmailField(blank=True, null=True, verbose_name='بريد Google الإلكتروني')
     
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username', 'first_name', 'last_name']
@@ -98,3 +103,53 @@ class LoginHistory(models.Model):
     
     def __str__(self):
         return f"{self.user.email} - {self.login_time}"
+
+
+class PasswordResetToken(models.Model):
+    """
+    رموز استرجاع كلمة المرور
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_reset_tokens')
+    token = models.CharField(max_length=255, unique=True, default=uuid.uuid4)
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+    
+    class Meta:
+        verbose_name = 'رمز استرجاع كلمة المرور'
+        verbose_name_plural = 'رموز استرجاع كلمة المرور'
+        db_table = 'auth_password_reset_tokens'
+    
+    def __str__(self):
+        return f"Password Reset Token for {self.user.email}"
+    
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+    
+    def is_valid(self):
+        return not self.is_used and not self.is_expired()
+
+
+class EmailVerificationToken(models.Model):
+    """
+    رموز التحقق من البريد الإلكتروني
+    """
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='email_verification_tokens')
+    token = models.CharField(max_length=255, unique=True, default=uuid.uuid4)
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+    
+    class Meta:
+        verbose_name = 'رمز التحقق من البريد الإلكتروني'
+        verbose_name_plural = 'رموز التحقق من البريد الإلكتروني'
+        db_table = 'auth_email_verification_tokens'
+    
+    def __str__(self):
+        return f"Email Verification Token for {self.user.email}"
+    
+    def is_expired(self):
+        return timezone.now() > self.expires_at
+    
+    def is_valid(self):
+        return not self.is_used and not self.is_expired()
